@@ -1,0 +1,168 @@
+{
+  "policy_joint_names": [
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint"
+  ],
+  "default_joint_pos": [
+    0.10000000149011612,
+    0.8,
+    -1.5,
+    -0.10000000149011612,
+    0.8,
+    -1.5,
+    0.10000000149011612,
+    1.0,
+    -1.5,
+    -0.10000000149011612,
+    1.0,
+    -1.5
+  ],
+  "onnx": {
+    "meta": {
+      "in_keys": [
+        "obs_history"
+      ],
+      "out_keys": [
+        "action"
+      ],
+      "in_shapes": [
+        [
+          [
+            1,
+            42
+          ]
+        ]
+      ]
+    },
+    "path": "decap.onnx"
+  },
+  "commands": {
+    "velocity": {
+      "name": "UiCommand",
+      "ui": {
+        "inputs": [
+          {
+            "type": "slider",
+            "name": "lin_vel_x",
+            "label": "Forward Velocity",
+            "min": -1.0,
+            "max": 1.0,
+            "step": 0.05,
+            "default": 0.5
+          },
+          {
+            "type": "slider",
+            "name": "lin_vel_y",
+            "label": "Lateral Velocity",
+            "min": -0.5,
+            "max": 0.5,
+            "step": 0.05,
+            "default": 0.0
+          },
+          {
+            "type": "slider",
+            "name": "ang_vel_z",
+            "label": "Yaw Rate",
+            "min": -1.0,
+            "max": 1.0,
+            "step": 0.05,
+            "default": 0.0
+          }
+        ]
+      }
+    }
+  },
+  "observations": {
+    "obs_history": {
+      "fused": "obs/obs_history.onnx",
+      "input_slots": [
+        {
+          "entity": "robot",
+          "field": "joint_pos",
+          "input": "robot__joint_pos",
+          "shape": [
+            1,
+            12
+          ]
+        },
+        {
+          "entity": "robot",
+          "field": "joint_vel",
+          "input": "robot__joint_vel",
+          "shape": [
+            1,
+            12
+          ]
+        },
+        {
+          "entity": "robot",
+          "field": "projected_gravity_b",
+          "input": "robot__projected_gravity_b",
+          "shape": [
+            1,
+            3
+          ]
+        }
+      ],
+      "native_inputs": [
+        {
+          "name": "velocity_cmd",
+          "native": "command",
+          "command_name": "velocity",
+          "input": "native__velocity_cmd",
+          "size": 3
+        },
+        {
+          "name": "prev_actions",
+          "native": "prev_action",
+          "input": "native__prev_actions",
+          "size": 12
+        }
+      ],
+      "layout": [
+        {
+          "name": "projected_gravity",
+          "size": 3
+        },
+        {
+          "name": "velocity_cmd",
+          "size": 3
+        },
+        {
+          "name": "joint_pos",
+          "size": 12
+        },
+        {
+          "name": "joint_vel",
+          "size": 12
+        },
+        {
+          "name": "prev_actions",
+          "size": 12
+        }
+      ],
+      "size": 42
+    }
+  },
+  "actions": {
+    "effort": {
+      "type": "torque",
+      "scale": 8.0,
+      "actuator_names": [
+        ".*"
+      ],
+      "stiffness": 20.0,
+      "damping": 0.5
+    }
+  }
+}
