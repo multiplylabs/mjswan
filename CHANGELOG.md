@@ -49,6 +49,14 @@ shortcuts were removed outright (no alias) — see Removed.**
   The offset is the tracking command's reference pose and moves every control step,
   where `JointPositionActionCfg` offsets from a constant default pose. This is the
   control law a tracking policy trained ZEST / BeyondMimic-style uses.
+- **VR hand tracking: your hands are bodies in the simulation**
+  ([ADR 0006](docs/adr/0006-vr-hand-tracking-as-mocap-bodies.md)). Entering VR on a
+  headset that reports hand tracking now lets you push, block and pinch-grab things.
+  Each hand enters the physics as 11 mocap bodies spliced into the scene's MJCF at load
+  time, driven per physics substep, with an equality weld for grabs; contacts follow
+  tracking, so a hand the headset loses is not a phantom obstacle. The rig carries no
+  degrees of freedom, so a policy's observations are unchanged. Opt out per scene with
+  `ViewerConfig(hand_tracking=False)`.
 - Anchor-frame reference state fields on `TrackingCommand`: `anchor_lin_vel_w`,
   `anchor_ang_vel_w`, `ref_base_height`, `ref_base_lin_vel_b`, `ref_base_ang_vel_b`,
   `ref_gravity_b`, and `joint_pos` / `tracked_joint_pos`. A whole-body tracking task's

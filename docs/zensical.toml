@@ -23,6 +23,7 @@ nav = [
     { "Deployment" = "guides/deployment.md" },
     { "Publishing to Cloud" = "guides/publishing.md" },
     { "Embedding" = "guides/embedding.md" },
+    { "VR & Hand Tracking" = "guides/vr.md" },
   ]},
   { "API Reference" = [
     { "Python API" = "api/core.md" },

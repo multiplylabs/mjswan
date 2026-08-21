@@ -586,6 +586,7 @@ class mjswan.ViewerConfig(
     max_extra_envs: int = 2,
     enable_reflections: bool = True,
     enable_shadows: bool = True,
+    hand_tracking: bool = True,
     height: int = 240,
     width: int = 320,
 )
@@ -605,6 +606,7 @@ Camera and rendering configuration applied to a scene via `SceneHandle.set_viewe
 | `origin_type` | One of `ViewerConfig.OriginType.{AUTO, WORLD, ASSET_ROOT, ASSET_BODY}`. Controls how the camera tracks the scene. |
 | `body_name` | Body to track when `origin_type` is `ASSET_BODY`. |
 | `enable_reflections` / `enable_shadows` | Toggle three.js reflections and shadows. |
+| `hand_tracking` | Whether a VR viewer may inject its mocap hand rig into the scene. See [VR & Hand Tracking](../guides/vr.md). |
 
 ### ViewerConfig.from_position
 

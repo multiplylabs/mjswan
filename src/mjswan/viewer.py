@@ -63,6 +63,13 @@ class ViewerConfig:
     enable_shadows: bool = True
     """Whether to enable shadows."""
 
+    hand_tracking: bool = True
+    """Whether a VR viewer may inject its mocap hand rig into the scene.
+
+    Only ever active inside a WebXR session with hand tracking; the rig it injects
+    carries no degrees of freedom, so a policy sees the same observations either way.
+    """
+
     height: int = 240
     """Viewer canvas height in pixels."""
 
@@ -79,6 +86,7 @@ class ViewerConfig:
             "originType": self.origin_type.name,
             "enableReflections": self.enable_reflections,
             "enableShadows": self.enable_shadows,
+            "handTracking": self.hand_tracking,
             "height": self.height,
             "width": self.width,
         }

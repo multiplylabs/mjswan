@@ -233,13 +233,14 @@ export function stepPhysics(
   terms: readonly ResolvedActionTerm[],
   actions: Float32Array,
   decimation: number,
-  onSubstep?: () => void,
+  /** Called before each substep with its index, for state that advances per substep. */
+  onSubstep?: (substep: number) => void,
   /** After the step, where mjlab's `scene.update(dt=physics_dt)` reads sensors. */
   onSubstepEnd?: () => void,
 ): void {
   for (let substep = 0; substep < decimation; substep++) {
     applyAction(mjData, terms, actions);
-    onSubstep?.();
+    onSubstep?.(substep);
     mujoco.mj_step(mjModel, mjData);
     onSubstepEnd?.();
   }

@@ -25,6 +25,8 @@ export type ViewerConfig = {
   enableReflections?: boolean;
   /** Whether to enable shadows. */
   enableShadows?: boolean;
+  /** Whether VR hand tracking may inject its mocap hand rig into the scene. */
+  handTracking?: boolean;
   /** Viewer canvas height in pixels. */
   height?: number;
   /** Viewer canvas width in pixels. */

@@ -329,6 +329,7 @@ class ClientBuilder:
             f"  originType: '{d.origin_type.name}' as const,",
             f"  enableReflections: {str(d.enable_reflections).lower()},",
             f"  enableShadows: {str(d.enable_shadows).lower()},",
+            f"  handTracking: {str(d.hand_tracking).lower()},",
             f"  height: {d.height},",
             f"  width: {d.width},",
             "} as const;",

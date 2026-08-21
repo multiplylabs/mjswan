@@ -13,6 +13,9 @@ import type { EnginePlugins } from '../plugins';
 import { type SplatTransform, type SplatMesh, loadSplat, disposeSplat, applySplatTransform } from '../scene/splat';
 import { loadCollider, disposeCollider } from '../scene/collider';
 import { DragStateManager } from '../utils/dragStateManager';
+import { XrHandTracker } from '../xr/XrHandTracker';
+import { HandMocapBinding } from '../xr/HandMocap';
+import { injectHandRig } from '../xr/handRig';
 import { createTendonState, updateTendonGeometry, updateTendonRendering } from '../scene/tendons';
 import { updateHeadlightFromCamera, updateLightsFromData } from '../scene/lights';
 import { mjcToThreeCoordinate, threeToMjcCoordinate } from '../scene/coordinate';
@@ -215,6 +218,20 @@ export class mjswanRuntime {
   private eventManager: EventManager | null;
   private terrainData: TerrainData | null;
   private vrButton: HTMLElement | null;
+  /**
+   * Parent of the camera and the tracked hands: in an XR session three.js reads the
+   * camera's parent transform as the reference-space origin, so this is what decides
+   * where in the scene the viewer stands.
+   */
+  private readonly xrRig: THREE.Group;
+  private handTracker: XrHandTracker | null;
+  /** The desktop camera pose, parked while an XR session drives the camera. */
+  private savedCameraPose: { position: THREE.Vector3; quaternion: THREE.Quaternion } | null;
+  private handBinding: HandMocapBinding | null;
+  /** Bodies a pinch may weld to a hand; null until a scene is loaded. */
+  private graspableBodyIds: Set<number> | null;
+  /** Held from the load: the XR rig's default pose is derived from the same view. */
+  private viewerConfig: ViewerConfig | null;
   private splatMesh: SplatMesh | null;
   private colliderMesh: THREE.Group | null;
   private currentSplatTransform: SplatTransform;
@@ -287,7 +304,10 @@ export class mjswanRuntime {
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.001, 1000);
     this.camera.name = 'PerspectiveCamera';
     this.camera.position.set(2.0, 1.7, 1.7);
-    this.scene.add(this.camera);
+    this.xrRig = new THREE.Group();
+    this.xrRig.name = 'XR Rig';
+    this.scene.add(this.xrRig);
+    this.xrRig.add(this.camera);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.xr.enabled = true;
@@ -301,9 +321,22 @@ export class mjswanRuntime {
     this.container.appendChild(this.renderer.domElement);
 
     this.vrButton = null;
+    this.handTracker = null;
+    this.handBinding = null;
+    this.viewerConfig = null;
+    this.savedCameraPose = null;
+    this.graspableBodyIds = null;
+    // Without the reference space pinned, the floor a headset reports is device-defined;
+    // `local-floor` puts y=0 on the real floor, which is MuJoCo's z=0.
+    this.renderer.xr.setReferenceSpaceType('local-floor');
+    this.renderer.xr.addEventListener('sessionstart', this.onXrSessionStart);
+    this.renderer.xr.addEventListener('sessionend', this.onXrSessionEnd);
     navigator.xr?.isSessionSupported('immersive-vr').then((supported) => {
       if (supported) {
-        this.vrButton = VRButton.createButton(this.renderer);
+        // Hand tracking is an opt-in feature: without asking, `getHand()` stays empty.
+        this.vrButton = VRButton.createButton(this.renderer, {
+          optionalFeatures: ['hand-tracking'],
+        });
         document.body.appendChild(this.vrButton);
       }
     });
@@ -369,6 +402,8 @@ export class mjswanRuntime {
     // Before the graph swap below, or a running term steps a session it just released.
     await this.stop();
     this.scenePlugins = scene.plugins ?? {};
+    // Before the build: whether the hand rig is injected is decided from this config.
+    this.viewerConfig = scene.viewer ?? null;
     this.terrainData = scene.terrainData ?? null;
     // Needed before `buildSceneFromMjz`, which derives `decimation` from it.
     this.controlDt = scene.controlDt && scene.controlDt > 0 ? scene.controlDt : null;
@@ -414,6 +449,8 @@ export class mjswanRuntime {
     this.lights = [];
     this.mujocoRoot = null;
     this.dynamicBodyIds = null;
+    this.graspableBodyIds = null;
+    this.handBinding = null;
 
     await this.buildSceneFromMjz(scene.model);
 
@@ -423,7 +460,7 @@ export class mjswanRuntime {
 
     await this.loadPolicyConfig(scene.policy ?? null);
 
-    this.applyViewerConfig(scene.viewer ?? null);
+    this.applyViewerConfig(this.viewerConfig);
 
     // `mode="startup"` fires once, after the model and policy exist.
     if (this.eventManager && this.mjModel && this.mjData) {
@@ -531,6 +568,10 @@ export class mjswanRuntime {
       updateLightsFromData(this.mujoco, this.mjData, this.lights);
       updateHeadlightFromCamera(this.camera, this.lights);
       this.dynamicBodyIds = this.computeDynamicBodyIds(this.mjModel);
+      this.graspableBodyIds = this.computeGraspableBodyIds(this.mjModel);
+      this.handBinding = this.handTrackingEnabled
+        ? HandMocapBinding.bind(this.mujoco, this.mjModel)
+        : null;
       this.syncStaticBodiesFromData();
 
       this.timestep = this.mjModel.opt.timestep || 0.001;
@@ -567,7 +608,22 @@ export class mjswanRuntime {
   private async buildSceneFromMjz(model: ArrayBuffer): Promise<void> {
     try {
       const xmlPath = await loadMjzFile(this.mujoco, model);
-      await this.buildScene(xmlPath);
+      const rigPath = this.writeHandRigXml(xmlPath);
+      if (!rigPath) {
+        await this.buildScene(xmlPath);
+        return;
+      }
+      try {
+        await this.buildScene(rigPath);
+      } catch (error) {
+        if (isWasmOom(error)) {
+          throw error;
+        }
+        // A model the rig cannot be spliced into still has to load.
+        console.warn('[XR] hand rig failed to compile; loading the model as authored:', error);
+        this.loadingScene = null;
+        await this.buildScene(xmlPath);
+      }
     } catch (error) {
       this.loadingScene = null;
       if (isWasmOom(error)) {
@@ -1234,6 +1290,7 @@ export class mjswanRuntime {
     // With the sim state, as mjlab does: a force from before the reset would otherwise
     // keep an `illegal_contact` term firing.
     this.contactSensors.reset();
+    this.handBinding?.reset(this.mjModel, this.mjData);
     // Reset with the sim state, not the terms: it reads nothing from the scene.
     if (this.onnxModule) {
       this.onnxInputDict = this.onnxModule.initInput();
@@ -1263,6 +1320,7 @@ export class mjswanRuntime {
     }
     // Viewer-only: mouse-drag forces, not part of the MDP.
     this.applyDragForces();
+    this.applyHandTracking();
 
     this.refreshActionReferences();
     stepPhysics(
@@ -1272,7 +1330,7 @@ export class mjswanRuntime {
       this.policyControl ?? [],
       this.policyRunner?.getLastActions() ?? EMPTY_ACTIONS,
       this.decimation,
-      undefined,
+      this.handBinding && this.handTracker ? (substep) => this.writeHandSubstep(substep) : undefined,
       // Per substep, not per control step, as mjlab rolls it from
       // `scene.update(dt=physics_dt)` inside its own decimation loop.
       this.contactSensors.size > 0 ? () => this.advanceContactSensors() : undefined,
@@ -1469,6 +1527,125 @@ export class mjswanRuntime {
     this.cameraState = applyViewerConfig(config, this.camera, this.controls, this.mjModel, this.mjData);
   }
 
+  /** Hand tracking needs both the scene's consent and a browser that speaks WebXR. */
+  private get handTrackingEnabled(): boolean {
+    return this.viewerConfig?.handTracking !== false && typeof navigator !== 'undefined' && 'xr' in navigator;
+  }
+
+  /**
+   * Stand the viewer where the desktop camera stood, facing the same target. The yaw
+   * assumes a `local-floor` origin facing -z, which is what a recentred headset reports;
+   * the viewer can always recentre from the headset itself.
+   */
+  private onXrSessionStart = (): void => {
+    this.savedCameraPose = {
+      position: this.camera.position.clone(),
+      quaternion: this.camera.quaternion.clone(),
+    };
+    const eye = this.camera.getWorldPosition(new THREE.Vector3());
+    const forward = new THREE.Vector3().subVectors(this.controls.target, eye);
+    this.xrRig.position.set(eye.x, 0, eye.z);
+    this.xrRig.quaternion.setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0),
+      Math.atan2(-forward.x, -forward.z),
+    );
+    this.xrRig.updateMatrixWorld(true);
+    if (!this.handTracker) {
+      this.handTracker = new XrHandTracker(this.renderer, this.xrRig);
+    }
+  };
+
+  /** Hands leave with the session, and the desktop camera gets its pose back. */
+  private onXrSessionEnd = (): void => {
+    this.handTracker?.dispose();
+    this.handTracker = null;
+    if (this.mjModel && this.mjData) {
+      this.handBinding?.reset(this.mjModel, this.mjData);
+    }
+    this.xrRig.position.set(0, 0, 0);
+    this.xrRig.quaternion.identity();
+    this.xrRig.updateMatrixWorld(true);
+    if (this.savedCameraPose) {
+      this.camera.position.copy(this.savedCameraPose.position);
+      this.camera.quaternion.copy(this.savedCameraPose.quaternion);
+      this.savedCameraPose = null;
+      this.controls.update();
+    }
+  };
+
+  /**
+   * Latch this control step's hand poses and settle pinch grabs. Viewer-only, like the
+   * drag forces: the hands are an outside disturbance, not part of the MDP.
+   */
+  private applyHandTracking(): void {
+    if (!this.handBinding || !this.handTracker || !this.mjModel || !this.mjData) {
+      return;
+    }
+    const frames = this.handTracker.frames;
+    this.handBinding.beginStep(frames);
+    this.handBinding.applyGrabs(this.mjModel, this.mjData, frames, this.graspableBodyIds);
+  }
+
+  /**
+   * Advance the hands one physics substep. Interpolated rather than written once per
+   * control step: at 50 Hz a whole step of hand motion lands as a 20 ms teleport, which
+   * tunnels straight through anything thin.
+   */
+  private writeHandSubstep(substep: number): void {
+    if (!this.handBinding || !this.mjModel || !this.mjData) {
+      return;
+    }
+    this.handBinding.writeSubstep(this.mjModel, this.mjData, (substep + 1) / this.decimation);
+  }
+
+  /**
+   * Splice the XR hand rig into the scene's XML and return the path to load, or null to
+   * load the model as authored. Written beside the original so relative asset paths
+   * (`meshdir`, `<include>`) still resolve.
+   */
+  private writeHandRigXml(xmlPath: string): string | null {
+    if (!this.handTrackingEnabled || !xmlPath.toLowerCase().endsWith('.xml')) {
+      return null;
+    }
+    try {
+      const source = new TextDecoder('utf-8').decode(
+        this.mujoco.FS.readFile(`/working/${xmlPath}`),
+      );
+      const injected = injectHandRig(source);
+      if (!injected) {
+        return null;
+      }
+      const slash = xmlPath.lastIndexOf('/');
+      const rigPath = `${xmlPath.slice(0, slash + 1)}mjswan-xr-${xmlPath.slice(slash + 1)}`;
+      this.mujoco.FS.writeFile(`/working/${rigPath}`, injected);
+      return rigPath;
+    } catch (error) {
+      console.warn('[XR] hand rig not injected; loading the model as authored:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Free-floating bodies only, where the mouse drag can pull on anything jointed: a weld
+   * pins its target rigidly, and pinning a link in the middle of an actuated chain is a
+   * fight with the policy rather than an interaction.
+   */
+  private computeGraspableBodyIds(mjModel: MjModel): Set<number> {
+    const free = this.mujoco.mjtJoint.mjJNT_FREE.value;
+    const graspable = new Set<number>();
+    for (let bodyId = 1; bodyId < mjModel.nbody; bodyId++) {
+      const adr = mjModel.body_jntadr[bodyId] as number;
+      const num = mjModel.body_jntnum[bodyId] as number;
+      for (let j = adr; j < adr + num; j++) {
+        if (mjModel.jnt_type[j] === free) {
+          graspable.add(bodyId);
+          break;
+        }
+      }
+    }
+    return graspable;
+  }
+
   private computeDynamicBodyIds(mjModel: MjModel): Set<number> {
     const dynamic = new Set<number>();
     for (let bodyId = 1; bodyId < mjModel.nbody; bodyId++) {
@@ -1505,10 +1682,16 @@ export class mjswanRuntime {
   private render = (): void => {
     this.commandManager.updateDebugVisuals();
 
-    if (this.mjData) {
+    // In a session the headset owns the camera, and moving the world under a standing
+    // viewer is what makes people sick — so no body tracking, no orbit damping.
+    const presenting = this.renderer.xr.isPresenting;
+    if (this.mjData && !presenting) {
       updateCameraFromData(this.mjData, this.camera, this.controls, this.cameraState);
     }
-    this.controls.update();
+    if (!presenting) {
+      this.controls.update();
+    }
+    this.handTracker?.snapshot();
 
     if (this.mjModel && this.mjData && this.bodies) {
       updateHeadlightFromCamera(this.camera, this.lights);
@@ -1613,6 +1796,12 @@ export class mjswanRuntime {
       this.dragStateManager = null;
     }
 
+    this.renderer.xr.removeEventListener('sessionstart', this.onXrSessionStart);
+    this.renderer.xr.removeEventListener('sessionend', this.onXrSessionEnd);
+    this.handTracker?.dispose();
+    this.handTracker = null;
+    this.handBinding = null;
+
     this.mjData = null;
     this.mjModel = null;
 
@@ -1641,6 +1830,7 @@ export class mjswanRuntime {
     this.lights = [];
     this.mujocoRoot = null;
     this.dynamicBodyIds = null;
+    this.graspableBodyIds = null;
     this.lastSimState.bodies.clear();
     this.commandManager.dispose();
   }
