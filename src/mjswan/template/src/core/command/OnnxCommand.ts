@@ -19,6 +19,7 @@ import { applyEntityWrites, type WriteTarget, type WriteValues } from '../event/
 import { buildFeeds, declaredFeeds, toFloat32 } from '../onnx/session';
 import type { OnnxInputSlot, OnnxSession, OnnxTensorLike, SlotReader } from '../onnx/session';
 import { CommandDebugVisuals, type VizPrimitive } from './debugViz';
+import { PoseGhost } from '../scene/poseGhost';
 import type { CommandConfigEntry, CommandTerm, CommandTermContext, CommandUiConfig } from './types';
 
 export type { OnnxInputSlot, OnnxSession, OnnxTensorLike, SlotReader };
@@ -43,6 +44,17 @@ export interface OnnxCommandConfig extends CommandConfigEntry {
   debug_vis?: boolean;
   /** What mjlab's `_debug_vis_impl` draws, as data — see `debugViz.ts`. */
   viz?: VizPrimitive[];
+  /**
+   * Draw a tinted copy of the robot at a pose this graph publishes — for a term whose output *is*
+   * a whole-body target, which markers convey far less well than the body itself.
+   */
+  ghost?: {
+    /** State fields holding `[nbody, 3]` world positions and `[nbody, 4]` xyzw rotations. */
+    pos_field: string;
+    quat_field: string;
+    color?: [number, number, number];
+    opacity?: number;
+  };
 }
 
 export interface OnnxCommandDeps {
@@ -80,6 +92,7 @@ export class OnnxCommand implements CommandTerm {
   private pendingResample = true;
   private uiValues = new Map<string, number>();
   private readonly visuals: CommandDebugVisuals | null;
+  private readonly ghost: PoseGhost | null;
   /** mjlab's `_debug_vis_enabled` — starts wherever the task's `debug_vis` put it. */
   private debugVisOn: boolean;
 
@@ -106,6 +119,19 @@ export class OnnxCommand implements CommandTerm {
         ? // Under the model root, as `TrackingCommand`'s ghost is: a marker in world
           // coordinates has to move with whatever transform the root carries.
           new CommandDebugVisuals(termName, config.viz, context.mujocoRoot ?? context.scene)
+        : null;
+    this.ghost =
+      config.ghost && context?.bodies && context.mjModel
+        ? new PoseGhost(
+            context.mujocoRoot ?? context.scene,
+            context.bodies,
+            context.mjModel,
+            {
+              name: `${termName} ghost`,
+              color: config.ghost.color ?? [0.8, 0.2, 0.2],
+              opacity: config.ghost.opacity ?? 0.45,
+            },
+          )
         : null;
   }
 
@@ -180,7 +206,7 @@ export class OnnxCommand implements CommandTerm {
 
   /** Whether the drawing is on, or `null` when there is none — no control is offered. */
   debugVisEnabled(): boolean | null {
-    if (!this.visuals || !this.cfg.debug_vis) return null;
+    if ((!this.visuals && !this.ghost) || !this.cfg.debug_vis) return null;
     return this.debugVisOn;
   }
 
@@ -190,17 +216,26 @@ export class OnnxCommand implements CommandTerm {
 
   /** Redraw the `viz` primitives from the current state, as mjlab redraws each frame. */
   updateDebugVisuals(): void {
+    const on = this.debugVisEnabled() === true;
     this.visuals?.update(
-      this.debugVisEnabled() === true,
+      on,
       // mjlab's joystick writes into the term's state, so its arrows follow the sliders.
       field =>
         field === this.cfg.command_field ? this.getCommand() : this.getStateField(field),
       this.deps.readSlot,
     );
+    if (this.ghost && this.cfg.ghost) {
+      this.ghost.update(
+        on,
+        this.getStateField(this.cfg.ghost.pos_field),
+        this.getStateField(this.cfg.ghost.quat_field),
+      );
+    }
   }
 
   dispose(): void {
     this.visuals?.dispose();
+    this.ghost?.dispose();
   }
 
   getUiValue(inputName: string): number | undefined {

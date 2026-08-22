@@ -173,6 +173,12 @@ class CommandTermConfig:
     term_name: str
     params: dict[str, Any] = field(default_factory=dict)
     ui: CommandUiConfig | None = None
+    viz: list[dict[str, Any]] | None = None
+    """Debug-vis primitives for a *native* term, drawn exactly as a traced term's are.
+
+    A traced term's primitives ride on :class:`PendingCommandTrace`; this is the same thing
+    for a term the browser owns, so a ``ui_command``'s sliders can be drawn.
+    """
     pending_trace: PendingCommandTrace | None = None
     """When set, this term is not yet resolved — see :class:`PendingCommandTrace`."""
     pending_reset_trace: PendingResetTrace | None = None
@@ -188,6 +194,8 @@ class CommandTermConfig:
         data = {"name": self.term_name, **self.params}
         if self.ui is not None:
             data["ui"] = self.ui.to_dict()
+        if self.viz is not None:
+            data["viz"] = self.viz
         return data
 
 

@@ -140,6 +140,7 @@ export class TrackingCommand implements CommandTerm {
   /** Traced reference-state-initialization jitter, or null when the task jitters nothing. */
   private readonly resetJitter: OnnxEvent | null;
   refJointPos: Float32Array[];
+  refJointVel: Float32Array[];
   refRootPos: Float32Array[];
   refRootQuat: Float32Array[];
   refIdx: number;
@@ -172,6 +173,7 @@ export class TrackingCommand implements CommandTerm {
       : [0];
     this.resetJitter = this.buildResetJitter(config.reset_graph);
     this.refJointPos = [];
+    this.refJointVel = [];
     this.refRootPos = [];
     this.refRootQuat = [];
     this.refIdx = 0;
@@ -211,6 +213,7 @@ export class TrackingCommand implements CommandTerm {
       this.selectedMotionName = null;
       this.selectedMotion = null;
       this.refJointPos = [];
+      this.refJointVel = [];
       this.refRootPos = [];
       this.refRootQuat = [];
       this.refBodyPosW = [];
@@ -240,6 +243,7 @@ export class TrackingCommand implements CommandTerm {
     this.datasetQposAdr = this.resolveQposAdr(loaded.dataset_joint_names ?? []);
     this.refLen = loaded.frameCount;
     this.refJointPos = loaded.jointPos;
+    this.refJointVel = loaded.jointVel;
     this.refIdx = this.sampleInitialFrame(this.refLen);
     this.nJoints = loaded.jointPos[0]?.length ?? 0;
     this.frameAccumulator = 0.0;
@@ -426,6 +430,14 @@ export class TrackingCommand implements CommandTerm {
         return this.refWindow(this.refRootQuat, 4, true);
       case 'ref_joint_pos':
         return this.refWindow(this.refJointPos, this.nJoints);
+      case 'ref_joint_vel':
+        return this.refWindow(this.refJointVel, this.nJoints);
+      // Whole-body reference over the window, for tasks whose goal is Cartesian keypoints
+      // rather than the root alone. Anchor- and root-only channels are a slice of these.
+      case 'ref_body_pos_w':
+        return this.refWindow(this.refBodyPosW, this.getBodyNames().length * 3);
+      case 'ref_body_quat_w':
+        return this.refBodyQuatWindow();
       case 'anchor_pos_w':
         return this.getAnchorPos();
       case 'anchor_quat_w':
@@ -490,6 +502,31 @@ export class TrackingCommand implements CommandTerm {
       const values = quat ? normalizeQuat(frame) : frame;
       for (let j = 0; j < stride && j < values.length; j++) {
         out[i * stride + j] = values[j];
+      }
+    }
+    return out;
+  }
+
+  /**
+   * {@link refWindow} for a per-body quaternion field: every body normalized, and the
+   * not-ready fill an identity per body rather than one identity and zeros.
+   */
+  private refBodyQuatWindow(): Float32Array {
+    const nBodies = this.getBodyNames().length;
+    const stride = nBodies * 4;
+    const out = new Float32Array(this.timeSteps.length * stride);
+    for (let i = 0; i < this.timeSteps.length; i++) {
+      for (let b = 0; b < nBodies; b++) out[i * stride + b * 4] = 1.0;
+    }
+    if (!this.isReady()) {
+      return out;
+    }
+    for (let i = 0; i < this.timeSteps.length; i++) {
+      const index = Math.min(this.refLen - 1, Math.max(0, this.refIdx + this.timeSteps[i]));
+      const frame = this.refBodyQuatW[index];
+      if (!frame) continue;
+      for (let b = 0; b < nBodies && (b + 1) * 4 <= frame.length; b++) {
+        out.set(normalizeQuat(frame.subarray(b * 4, b * 4 + 4)), i * stride + b * 4);
       }
     }
     return out;

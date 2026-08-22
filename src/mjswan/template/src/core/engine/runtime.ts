@@ -15,6 +15,8 @@ import { loadCollider, disposeCollider } from '../scene/collider';
 import { DragStateManager } from '../utils/dragStateManager';
 import { createTendonState, updateTendonGeometry, updateTendonRendering } from '../scene/tendons';
 import { updateHeadlightFromCamera, updateLightsFromData } from '../scene/lights';
+import { ExternalWrenchApplier, isExternalWrenchConfig } from './externalWrench';
+import { HandSpringContact, type HandSpringConfig } from './handSpringContact';
 import { mjcToThreeCoordinate, threeToMjcCoordinate } from '../scene/coordinate';
 import {
   type CameraView,
@@ -220,6 +222,10 @@ export class mjswanRuntime {
   private currentSplatTransform: SplatTransform;
   private cameraState: ViewerState;
   private commandManager: CommandManager;
+  /** Operator-driven external wrench, when the policy declares one. */
+  private externalWrench: ExternalWrenchApplier | null = null;
+  /** The virtual contact an exertion policy pushes against, when the policy declares one. */
+  private handSpring: HandSpringContact | null = null;
   /** `joint_position_reference` terms → the command name publishing their reference. */
   private readonly referenceActionCommands = new Map<ResolvedActionTerm, string>();
   private scenePlugins: EnginePlugins;
@@ -334,6 +340,8 @@ export class mjswanRuntime {
     this.dynamicBodyIds = null;
 
     this.mjModel = null;
+    this.externalWrench = null;
+    this.handSpring = null;
     this.mjData = null;
     this.bodies = null;
     this.lights = [];
@@ -409,6 +417,8 @@ export class mjswanRuntime {
 
     // Clear current references before loading the new scene.
     this.mjModel = null;
+    this.externalWrench = null;
+    this.handSpring = null;
     this.mjData = null;
     this.bodies = null;
     this.lights = [];
@@ -1263,6 +1273,9 @@ export class mjswanRuntime {
     }
     // Viewer-only: mouse-drag forces, not part of the MDP.
     this.applyDragForces();
+    // After the drag pass, which is what clears `xfrc_applied`.
+    this.applyExternalWrench();
+    this.applyHandSpring();
 
     this.refreshActionReferences();
     stepPhysics(
@@ -1314,8 +1327,17 @@ export class mjswanRuntime {
       if (this.onnxModule.inKeys.includes('time_step')) {
         input.time_step = new ort.Tensor('float32', new Float32Array([this.onnxTimeStep]), [1, 1]);
       }
+      // A group's vector is flat, but the graph's input need not be: a policy whose inputs are
+      // structured (a look-ahead window, a per-body field) declares their shapes at build time and
+      // the flat buffer is reinterpreted, since ORT rejects a shape its graph does not expect.
+      const inputShapes = this.policyRunner.getConfig().policy_input_shapes ?? {};
       for (const [key, value] of Object.entries(obs)) {
-        input[key] = new ort.Tensor('float32', value, [1, value.length]);
+        const declared = inputShapes[key];
+        const shape =
+          declared && declared.reduce((a, b) => a * b, 1) === value.length
+            ? declared
+            : [1, value.length];
+        input[key] = new ort.Tensor('float32', value, shape);
       }
       for (const key of this.onnxModule.inKeys) {
         if (!input[key]) {
@@ -1361,6 +1383,35 @@ export class mjswanRuntime {
     } finally {
       this.onnxInferencing = false;
     }
+  }
+
+  /** Push on the bodies the policy's `external_wrench` names, from its UI command's values. */
+  private applyExternalWrench(): void {
+    if (!this.mjData || !this.policyRunner) return;
+    const config = this.policyRunner.getConfig().external_wrench;
+    if (!isExternalWrenchConfig(config)) return;
+    if (!this.externalWrench) {
+      if (!this.mjModel) return;
+      this.externalWrench = new ExternalWrenchApplier(config, this.mjModel);
+    }
+    this.externalWrench.apply(this.mjData, this.commandManager.getTerm(config.command_name));
+  }
+
+  /**
+   * Load the hands against the virtual contact an exertion policy was trained on.
+   *
+   * Without this the policy's displaced hand target is met by simply moving there: nothing resists,
+   * so nothing is exerted and the gauge would read zero however hard the dial is turned.
+   */
+  private applyHandSpring(): void {
+    if (!this.mjData || !this.policyRunner) return;
+    const config = this.policyRunner.getConfig().hand_spring as HandSpringConfig | undefined;
+    if (!config?.targets?.length) return;
+    if (!this.handSpring) {
+      if (!this.mjModel) return;
+      this.handSpring = new HandSpringContact(config, this.mjModel, this.mujocoRoot ?? this.scene);
+    }
+    this.handSpring.apply(this.mjData, this.commandManager.getTerm(config.command_name));
   }
 
   private applyDragForces(): void {
@@ -1615,6 +1666,8 @@ export class mjswanRuntime {
 
     this.mjData = null;
     this.mjModel = null;
+    this.externalWrench = null;
+    this.handSpring = null;
 
     // NOTE: Do NOT dispose Three.js resources here as they may be cached The cache manager
     // will handle their disposal when evicting Just clear references

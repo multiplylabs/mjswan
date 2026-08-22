@@ -114,6 +114,42 @@ class PolicyConfig:
     lives on the action term.
     """
 
+    policy_input_shapes: dict[str, list[int]] | None = None
+    """Per-input tensor shapes, keyed by ONNX input name, for a graph whose inputs are
+    not flat ``[1, N]`` vectors.
+
+    An observation group always produces a flat buffer; a policy whose inputs are
+    structured (a look-ahead window, a per-body field) declares the shapes here so the
+    runtime can reinterpret that buffer instead of feeding a shape the graph rejects.
+    Read off the ONNX itself with :func:`onnx_input_shapes`.
+    """
+
+    initial_action: list[float] | None = None
+    """Value the stored-action buffer holds before the first inference, or ``None`` for zeros.
+
+    The buffer is what the action terms and any ``prev_action`` observation read, so a
+    policy whose output is an *absolute* joint target — not a residual — starts life with
+    a whole-pose error unless this is its default pose. Same length as the action vector.
+    """
+
+    external_wrench: dict[str, Any] | None = None
+    """Bodies an operator can push with a UI command's sliders, for perturbation testing.
+
+    ``{"command_name": str, "targets": [{"body": str, "axes": [x, y, z], "enable": str | None,
+    "torque_axes": [x, y, z] | None}]}``, where every string but ``body`` names a UI input on
+    that command. Forces are world-frame newtons applied at the body origin -- what
+    ``mjData.xfrc_applied`` takes. Distinct from the viewer's mouse-drag forces.
+    """
+
+    hand_spring: dict[str, Any] | None = None
+    """The virtual Kelvin-Voigt contact a force-exertion policy pushes against.
+
+    Such a policy is trained against a contact anchored at the reference hand: the hand leads, the
+    contact resists, and the reaction loads the body. Without it the displaced hand target is simply
+    met, nothing is exerted, and a force gauge reads zero however hard the dial is turned. See
+    ``core/engine/handSpringContact.ts`` for the shape.
+    """
+
     initial_qpos: list[float] | None = None
     """Optional initial qpos samples or defaults for runtime reset logic."""
 
@@ -193,8 +229,14 @@ class PolicyHandle:
         dataset_joint_names: list[str] | None = None,
         default: bool = False,
         loop: bool = True,
+        time_source: str = "wall",
     ) -> MotionHandle:
-        """Add a bundled ``.npz`` reference motion to this policy."""
+        """Add a bundled ``.npz`` reference motion to this policy.
+
+        ``time_source="sim"`` advances the clip cursor off ``mjData.time`` instead of the
+        render loop's ``dt``, so pausing and slow motion keep the reference in step with the
+        physics -- which a policy whose look-ahead window is counted in control steps needs.
+        """
         motion = MotionConfig(
             name=name,
             source=source,
@@ -212,6 +254,7 @@ class PolicyHandle:
             ),
             default=default,
             loop=loop,
+            time_source=time_source,  # type: ignore[arg-type]
         )
         return self._append_motion(motion)
 

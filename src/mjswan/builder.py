@@ -647,6 +647,17 @@ class Builder:
         # Not `if policy.clip_actions:` — 0.0 is a legal bound, not "unset".
         if policy.clip_actions is not None:
             data["clip_actions"] = float(policy.clip_actions)
+        if getattr(policy, "policy_input_shapes", None):
+            data["policy_input_shapes"] = {
+                name: [int(dim) for dim in shape]
+                for name, shape in policy.policy_input_shapes.items()
+            }
+        if getattr(policy, "initial_action", None):
+            data["initial_action"] = [float(v) for v in policy.initial_action]
+        if getattr(policy, "external_wrench", None):
+            data["external_wrench"] = policy.external_wrench
+        if getattr(policy, "hand_spring", None):
+            data["hand_spring"] = policy.hand_spring
         if getattr(policy, "initial_qpos", None):
             data["initial_qpos"] = policy.initial_qpos
         if getattr(policy, "initial_qvel", None):

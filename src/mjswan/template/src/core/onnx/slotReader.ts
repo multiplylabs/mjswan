@@ -54,6 +54,8 @@ type EntityIndex = {
   jointBias: Float32Array;
   /** mjlab's `root_body_id`: the entity's first non-world body. */
   rootBodyId: number;
+  /** Model body ids belonging to the entity, in spec order, worldbody excluded. */
+  bodyIds: number[];
   /** Model site ids belonging to the entity, in spec order. */
   siteIds: number[];
 };
@@ -135,6 +137,7 @@ function buildEntityIndex(
     qvelAdr,
     jointBias: Float32Array.from(bias),
     rootBodyId: bodyIds.length > 0 ? bodyIds[0] : -1,
+    bodyIds,
     siteIds: scopedIndices(siteNames, entity, prefixed),
   };
 }
@@ -221,6 +224,23 @@ const FIELD_READERS: Record<string, FieldReader> = {
     return out;
   },
   joint_vel: (index, mjData) => gather(mjData.qvel, index.qvelAdr),
+
+  // Every body of the entity, in model order — mjlab's per-body link frames. A term that
+  // wants one body slices this with the `body_ids` its `SceneEntityCfg` resolved.
+  body_link_pos_w: (index, mjData) => {
+    const out = new Float32Array(index.bodyIds.length * 3);
+    for (let i = 0; i < index.bodyIds.length; i++) {
+      out.set(vec3At(mjData.xpos, index.bodyIds[i]), i * 3);
+    }
+    return out;
+  },
+  body_link_quat_w: (index, mjData) => {
+    const out = new Float32Array(index.bodyIds.length * 4);
+    for (let i = 0; i < index.bodyIds.length; i++) {
+      out.set(quatAt(mjData.xquat, index.bodyIds[i]), i * 4);
+    }
+    return out;
+  },
 
   root_link_pos_w: rootField((root, mjData) => vec3At(mjData.xpos, root)),
   root_link_quat_w: rootField((root, mjData) => quatAt(mjData.xquat, root)),

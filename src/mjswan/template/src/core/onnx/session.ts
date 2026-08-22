@@ -149,13 +149,33 @@ class OrtSession implements OnnxSession {
   }
 }
 
-/** Create a real ORT-Web-backed session from graph bytes; never fetches. */
+/**
+ * Create a real ORT-Web-backed session from graph bytes; never fetches.
+ *
+ * Falls back to an unoptimized session if the optimized one cannot be created; see the retry.
+ */
 export async function createOnnxSession(bytes: ArrayBuffer): Promise<OnnxSession> {
-  const session = await ort.InferenceSession.create(bytes, {
-    executionProviders: ['wasm'],
-    graphOptimizationLevel: 'all',
-  });
-  return new OrtSession(session);
+  try {
+    return new OrtSession(
+      await ort.InferenceSession.create(bytes, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all',
+      }),
+    );
+  } catch (error) {
+    // Retried unoptimized rather than surfaced, because the failure is ORT's, not the graph's: its
+    // constant-folding pass (every level from `basic` up) rejects some large traced graphs with a
+    // misleading `HasExternalDataInMemory` error out of `SaveInitializedTensors` — the model
+    // carries no external data at all; the folding pass materializes it. Such a graph loads and
+    // runs correctly with folding off, and without this the whole scene fails to load.
+    console.warn('[onnx] session failed with graph optimization; retrying unoptimized:', error);
+    return new OrtSession(
+      await ort.InferenceSession.create(bytes, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'disabled',
+      }),
+    );
+  }
 }
 
 /**

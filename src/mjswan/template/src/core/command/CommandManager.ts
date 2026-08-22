@@ -1,4 +1,5 @@
 import { CustomCommands } from './custom_commands';
+import { CommandDebugVisuals, type VizPrimitive } from './debugViz';
 import { TrackingCommand } from './TrackingCommand';
 import { OnnxCommand, type OnnxCommandConfig } from './OnnxCommand';
 import {
@@ -26,11 +27,15 @@ type ValueCommandConfig = SliderCommandConfig | CheckboxCommandConfig;
 class UiCommand implements CommandTerm {
   private readonly inputs: CommandInputConfig[];
   private readonly values: Map<string, number>;
+  /** `viz` primitives, as `OnnxCommand` has: a UI term's sliders are worth drawing too. */
+  private readonly visuals: CommandDebugVisuals | null;
+  private readonly readSlot: CommandTermContext['readOnnxSlot'];
+  private debugVisOn: boolean;
 
   constructor(
-    _termName: string,
+    termName: string,
     config: CommandConfigEntry,
-    // _context: CommandTermContext
+    context?: CommandTermContext
   ) {
     this.inputs = Array.isArray(config.ui?.inputs) ? config.ui.inputs : [];
     this.values = new Map();
@@ -41,6 +46,36 @@ class UiCommand implements CommandTerm {
         this.values.set(input.name, input.default ? 1.0 : 0.0);
       }
     }
+    const viz = config.viz as VizPrimitive[] | undefined;
+    this.readSlot = context?.readOnnxSlot;
+    this.debugVisOn = config.debug_vis !== false;
+    this.visuals =
+      viz?.length && context
+        // Under the model root, as the other terms' markers are: a world-coordinate
+        // marker has to move with whatever transform the root carries.
+        ? new CommandDebugVisuals(termName, viz, context.mujocoRoot ?? context.scene)
+        : null;
+  }
+
+  debugVisEnabled(): boolean | null {
+    return this.visuals ? this.debugVisOn : null;
+  }
+
+  setDebugVisEnabled(enabled: boolean): void {
+    this.debugVisOn = enabled;
+  }
+
+  /** Redraw from the current slider values; `state: 'command'` is the whole UI vector. */
+  updateDebugVisuals(): void {
+    this.visuals?.update(
+      this.debugVisOn,
+      field => (field === 'command' ? this.getCommand() : null),
+      this.readSlot,
+    );
+  }
+
+  dispose(): void {
+    this.visuals?.dispose();
   }
 
   getCommand(): Float32Array {
@@ -65,15 +100,15 @@ class UiCommand implements CommandTerm {
     return field === 'command' ? this.getCommand() : null;
   }
 
-  reset(): void {
-    for (const input of this.inputs) {
-      if (input.type === 'slider') {
-        this.values.set(input.name, input.default);
-      } else if (input.type === 'checkbox') {
-        this.values.set(input.name, input.default ? 1.0 : 0.0);
-      }
-    }
-  }
+  /**
+   * Deliberately empty: a UI command holds what the *operator* set, not episode state.
+   *
+   * mjlab resets command terms per episode, and that is right for a term that resamples itself.
+   * These values come from a person moving a control, and a task whose episode ends on a loop
+   * boundary would otherwise wipe their settings every few seconds — a toggle that switches itself
+   * back off while you watch. Use the panel's Reset for that.
+   */
+  reset(): void {}
 
   getUiValue(inputName: string): number | undefined {
     return this.values.get(inputName);

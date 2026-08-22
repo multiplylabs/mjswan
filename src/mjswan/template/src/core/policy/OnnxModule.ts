@@ -2,6 +2,11 @@ import * as ort from 'onnxruntime-web';
 
 import { queueOrtRun } from '../onnx/runQueue';
 
+// Main thread, not ORT's proxy worker: the bundled worker entry touches `document` and throws
+// `ReferenceError: document is not defined` on start. The cost is that a graph heavier than the
+// frame budget — a traced whole-body IK, say — blocks rendering for its duration rather than
+// merely missing a control step. Moving inference off-thread needs the worker chunk emitted
+// properly by the bundler first.
 ort.env.wasm.proxy = false;
 ort.env.wasm.numThreads = 1;
 // Lib build: redirect ort's dynamic file fetches to its own CDN package.

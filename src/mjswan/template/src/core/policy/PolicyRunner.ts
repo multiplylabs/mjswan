@@ -81,6 +81,7 @@ export class PolicyRunner {
   private encoderBias: Float32Array;
   private numActions: number;
   private lastActions: Float32Array;
+  private readonly initialActions: Float32Array;
   private motionCache: Map<string, Promise<ArrayBuffer | null>> = new Map();
 
   constructor(config: PolicyConfig, options: PolicyRunnerOptions = {}) {
@@ -98,7 +99,15 @@ export class PolicyRunner {
 
     this.policyJointNames = (config.policy_joint_names ?? []).slice();
     this.numActions = (config.policy_num_actions as number | undefined) ?? this.policyJointNames.length;
-    this.lastActions = new Float32Array(this.numActions);
+    // Zeros unless the policy declares otherwise: an absolute-target policy's stored action
+    // starts at its default pose, since that buffer is what the action terms and the
+    // `prev_action` slot read before the first inference lands.
+    this.initialActions = this.normalizeArray(
+      (config.initial_action as number[] | undefined) ?? [],
+      this.numActions,
+      0.0
+    );
+    this.lastActions = new Float32Array(this.initialActions);
     this.defaultJointPos = this.normalizeArray(
       config.default_joint_pos ?? [],
       this.numActions,
@@ -118,7 +127,7 @@ export class PolicyRunner {
   }
 
   reset(state?: PolicyState): void {
-    this.lastActions.fill(0.0);
+    this.lastActions.set(this.initialActions);
     this.policyModule?.reset();
     for (const obsList of Object.values(this.obsGroups)) {
       for (const obs of obsList) {

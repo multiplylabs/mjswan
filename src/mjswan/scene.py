@@ -391,6 +391,10 @@ class SceneHandle:
         clip_actions: float | None = None,
         initial_qpos: list[float] | None = None,
         initial_qvel: list[float] | None = None,
+        policy_input_shapes: dict[str, list[int]] | None = None,
+        initial_action: list[float] | None = None,
+        external_wrench: dict[str, Any] | None = None,
+        hand_spring: dict[str, Any] | None = None,
         extras: dict[str, Any] | None = None,
         default: bool = False,
     ) -> PolicyHandle:
@@ -433,6 +437,16 @@ class SceneHandle:
                 to the task's runner config; ``0.0`` is a real bound, not "unset".
             initial_qpos: Initial qpos serialized into the policy config JSON.
             initial_qvel: Initial qvel serialized into the policy config JSON.
+            policy_input_shapes: Per-ONNX-input tensor shapes, for a graph whose inputs
+                are not flat ``[1, N]`` vectors. Absent, every group's buffer is fed as
+                ``[1, N]``.
+            initial_action: Value the stored-action buffer holds before the first
+                inference, for a policy whose output is an absolute target rather than a
+                residual. Defaults to zeros.
+            external_wrench: Bodies an operator can push with a UI command's sliders, for
+                perturbation testing. See :attr:`PolicyConfig.external_wrench`.
+            hand_spring: The virtual contact a force-exertion policy pushes against. See
+                :attr:`PolicyConfig.hand_spring`.
             extras: Extra JSON payload merged into the policy config.
 
         Returns:
@@ -503,6 +517,10 @@ class SceneHandle:
             clip_actions=clip_actions,
             initial_qpos=initial_qpos,
             initial_qvel=initial_qvel,
+            policy_input_shapes=policy_input_shapes,
+            initial_action=initial_action,
+            external_wrench=external_wrench,
+            hand_spring=hand_spring,
             extras=extras,
             default=default,
         )
