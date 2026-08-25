@@ -669,7 +669,7 @@ export class TrackingCommand implements CommandTerm {
 
   private async loadMotion(config: TrackingMotionConfig): Promise<LoadedTrackingMotion> {
     this.sampleHz = config.fps;
-    const stream = resolveStreamConfig(config.metadata?.stream);
+    const stream = await resolveStreamConfig(config.metadata?.stream);
     if (stream) {
       // Connect now and keep playing the bundled clip meanwhile: the generator needs a moment to
       // produce its opening frames, and a clip that already tracks is a better thing to show than

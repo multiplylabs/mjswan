@@ -75,21 +75,39 @@ const KEY_COMMANDS: Record<string, [number, number, number]> = {
 };
 
 /**
- * The stream to use, from the build's declaration and the page's own URL.
+ * Where the generator is, in order of preference: the page's own URL, then a `stream.json` beside
+ * the page, then whatever the build declared.
  *
- * `?stream=wss://host:port` overrides, and enables a live clip even where the build declared none.
- * That is what lets one published page be both things: a self-contained demo of a recorded clip for
- * anyone who opens it, and a live one for anyone who has a generator to point it at -- including
- * their own. Baking the URL in at build time makes the published page useless to everyone whose
- * generator is somewhere else, which is everyone.
+ * The middle one is what lets a single published link be steerable. A generator moves -- a tunnel
+ * is restarted, a machine is replaced -- and if its address is compiled into the bundle then every
+ * move costs a rebuild and a redeploy of an eighty-megabyte page. As a file next to the page it is
+ * a hundred bytes, and the link never changes.
+ *
+ * Absent or unreachable, the page stays exactly what it is without a generator: a self-contained
+ * demo of a recorded clip. That is the honest default for a public link, since the machine at the
+ * far end will not always be up.
  */
-export function resolveStreamConfig(
+export async function resolveStreamConfig(
   declared?: LiveMotionStreamConfig,
-): LiveMotionStreamConfig | null {
+): Promise<LiveMotionStreamConfig | null> {
   const search = typeof window === 'undefined' ? '' : window.location?.search ?? '';
   const override = new URLSearchParams(search).get('stream');
   if (override) {
     return { ...(declared ?? {}), url: override };
+  }
+  if (typeof document !== 'undefined') {
+    try {
+      // `no-store`: the whole point is that this can change between visits.
+      const response = await fetch(new URL('stream.json', document.baseURI), { cache: 'no-store' });
+      if (response.ok) {
+        const published = (await response.json()) as Partial<LiveMotionStreamConfig>;
+        if (published?.url) {
+          return { ...(declared ?? {}), ...published, url: published.url };
+        }
+      }
+    } catch {
+      // A missing or unreachable stream.json is the normal case for a clip-only deploy.
+    }
   }
   return declared ?? null;
 }
