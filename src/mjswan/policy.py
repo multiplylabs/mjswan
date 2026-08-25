@@ -230,6 +230,7 @@ class PolicyHandle:
         default: bool = False,
         loop: bool = True,
         time_source: str = "wall",
+        metadata: dict[str, Any] | None = None,
     ) -> MotionHandle:
         """Add a bundled ``.npz`` reference motion to this policy.
 
@@ -255,6 +256,7 @@ class PolicyHandle:
             default=default,
             loop=loop,
             time_source=time_source,  # type: ignore[arg-type]
+            metadata=dict(metadata) if metadata else {},
         )
         return self._append_motion(motion)
 

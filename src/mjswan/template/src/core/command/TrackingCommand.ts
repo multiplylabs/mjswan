@@ -5,6 +5,7 @@ import { getPosition, getQuaternion } from '../scene/scene';
 import { type NpzEntry, loadNpz } from '../scene/npz';
 import { type Bytes, resolveBytes } from '../utils/bytes';
 import { OnnxEvent, isOnnxEventConfig } from '../event/OnnxEvent';
+import { LiveMotionSource, type LiveMotionStreamConfig } from './liveMotion';
 import type { CommandConfigEntry, CommandTerm, CommandTermContext, CommandUiConfig } from './types';
 
 export type TrackingMotionConfig = {
@@ -19,6 +20,8 @@ export type TrackingMotionConfig = {
   loop?: boolean;
   clip_format?: 'body_world' | 'qpos';
   time_source?: 'wall' | 'sim';
+  /** Free-form extras from the build; `stream` turns this motion into a live one. */
+  metadata?: { stream?: LiveMotionStreamConfig } & Record<string, unknown>;
 };
 
 type LoadedTrackingMotion = TrackingMotionConfig & {
@@ -31,6 +34,14 @@ type LoadedTrackingMotion = TrackingMotionConfig & {
   qposFrames?: Float32Array[];
   frameCount: number;
 };
+
+/**
+ * Control steps between pose reports on a live clip.
+ *
+ * Every other step: the generator runs at about half the control rate, so this gives it a fresh
+ * pose for each frame it produces without flooding the socket.
+ */
+const LIVE_CONTEXT_REPORT_EVERY = 2;
 
 function normalizeQuat(quat: ArrayLike<number>): Float32Array {
   const length = Math.hypot(quat[0] ?? 1, quat[1] ?? 0, quat[2] ?? 0, quat[3] ?? 0) || 1.0;
@@ -146,6 +157,12 @@ export class TrackingCommand implements CommandTerm {
   refIdx: number;
   refLen: number;
   nJoints: number;
+  /** Set when the selected motion streams its frames instead of shipping them. */
+  private liveSource: LiveMotionSource | null;
+  /** Whether the streamed frames have replaced the bundled ones. */
+  private liveAdopted: boolean;
+  /** Streamed frames already mirrored into the derived root arrays. */
+  private liveMirrored: number;
 
   constructor(
     _termName: string,
@@ -187,6 +204,9 @@ export class TrackingCommand implements CommandTerm {
     this.refBodyQuatW = [];
     this.refBodyLinVelW = [];
     this.refBodyAngVelW = [];
+    this.liveSource = null;
+    this.liveAdopted = false;
+    this.liveMirrored = 0;
   }
 
   getCommand(): Float32Array {
@@ -262,7 +282,10 @@ export class TrackingCommand implements CommandTerm {
   }
 
   reset(): void {
-    this.refIdx = this.sampleInitialFrame(this.refLen);
+    // A live clip has no beginning to go back to: frame 0 is wherever the session started, minutes
+    // and metres ago. Resuming there would teleport the robot to the origin and hand it a reference
+    // it has already walked through, so an episode reset lands on the newest frames instead.
+    this.refIdx = this.liveAdopted ? this.liveFrontier() : this.sampleInitialFrame(this.refLen);
     this.frameAccumulator = 0.0;
     this.justReset = true;
     this.updateReferenceState();
@@ -271,6 +294,18 @@ export class TrackingCommand implements CommandTerm {
   }
 
   update(dt: number): void {
+    if (this.liveSource) {
+      if (!this.liveAdopted) {
+        if (this.liveSource.length > 0) {
+          this.adoptLiveFrames();
+        }
+      } else {
+        this.syncLiveFrames();
+        // Ask for frames past the furthest look-ahead the policy reads, not just past the cursor.
+        this.liveSource.ensure(this.refIdx + Math.max(0, ...this.timeSteps));
+        this.reportLiveContext();
+      }
+    }
     if (!this.selectedMotion || this.refLen <= 1) {
       return;
     }
@@ -285,7 +320,9 @@ export class TrackingCommand implements CommandTerm {
       this.updateGhostPose();
       return;
     }
-    const shouldLoop = this.selectedMotion?.loop !== false;
+    // A live clip's end is the generator running behind, not the motion being over: holding the
+    // last frame lets it catch up, whereas looping would restart the episode every time it does.
+    const shouldLoop = this.liveAdopted ? false : this.selectedMotion?.loop !== false;
     this.frameAccumulator += dt * this.sampleHz;
     let motionLooped = false;
     while (this.frameAccumulator >= 1.0) {
@@ -632,6 +669,14 @@ export class TrackingCommand implements CommandTerm {
 
   private async loadMotion(config: TrackingMotionConfig): Promise<LoadedTrackingMotion> {
     this.sampleHz = config.fps;
+    const stream = config.metadata?.stream;
+    if (stream) {
+      // Connect now and keep playing the bundled clip meanwhile: the generator needs a moment to
+      // produce its opening frames, and a clip that already tracks is a better thing to show than
+      // a robot with no reference at all. `adoptLiveFrames` switches over once frames exist.
+      this.liveSource = new LiveMotionSource(stream);
+      this.liveSource.connect();
+    }
     const npz = await loadNpz(await resolveBytes(config.data));
     const empty: Float32Array[] = [];
 
@@ -715,7 +760,131 @@ export class TrackingCommand implements CommandTerm {
     });
   }
 
+  /**
+   * Switch from the bundled clip to the streamed one.
+   *
+   * The two are unrelated trajectories in the same world, so this cannot be a seam: the frames are
+   * replaced wholesale and an episode reset is requested, which re-places the robot on the new
+   * frame 0 and re-primes the policy's history from that pose. Appending instead would teleport
+   * the reference mid-stride.
+   */
+  private adoptLiveFrames(): void {
+    const source = this.liveSource;
+    const motion = this.selectedMotion;
+    if (!source || !motion) {
+      return;
+    }
+    // Shared array objects, not copies: the source appends to exactly these as blocks arrive.
+    motion.jointPos = source.frames.jointPos;
+    motion.jointVel = source.frames.jointVel;
+    motion.bodyPosW = source.frames.bodyPosW;
+    motion.bodyQuatW = source.frames.bodyQuatW;
+    motion.bodyLinVelW = source.frames.bodyLinVelW;
+    motion.bodyAngVelW = source.frames.bodyAngVelW;
+    this.refJointPos = source.frames.jointPos;
+    this.refJointVel = source.frames.jointVel;
+    this.refBodyPosW = source.frames.bodyPosW;
+    this.refBodyQuatW = source.frames.bodyQuatW;
+    this.refBodyLinVelW = source.frames.bodyLinVelW;
+    this.refBodyAngVelW = source.frames.bodyAngVelW;
+    this.refRootPos = [];
+    this.refRootQuat = [];
+    this.liveMirrored = 0;
+    this.liveAdopted = true;
+    this.nJoints = source.frames.jointPos[0]?.length ?? this.nJoints;
+    this.syncLiveFrames();
+    // Start at the newest frames, not at the opening ones: the generator has been running since the
+    // socket opened, and the frames it produced while the bundled clip played are already history.
+    this.refIdx = this.liveFrontier();
+    // The hand-over is the one moment the robot is teleported: the reset re-places it on the live
+    // reference and re-primes the policy's history there. (Logging this is no help -- the
+    // production build strips `console.*`.)
+    this.context.requestReset?.();
+  }
+
+  /**
+   * The newest frame a live clip can be read from, leaving the policy's look-ahead in hand.
+   *
+   * Reading here rather than from the back of the buffer keeps the correction loop short: the
+   * generator's feedback is measured at the cursor, so a cursor far behind the frontier means it is
+   * correcting against stale information.
+   */
+  private liveFrontier(): number {
+    return Math.max(0, this.refLen - 1 - Math.max(0, ...this.timeSteps));
+  }
+
+  /**
+   * Send the robot's pose upstream, so the generator can continue from where the robot actually is.
+   *
+   * Assembled in the contract's order -- the free joint's seven, then the dataset joints -- because
+   * that is the layout the generator's own model uses, and the two are index-compatible.
+   */
+  private reportLiveContext(): void {
+    const mjModel = this.context.mjModel;
+    const mjData = this.context.mjData;
+    if (!mjModel || !mjData || this.refIdx % LIVE_CONTEXT_REPORT_EVERY !== 0) {
+      return;
+    }
+    const freeJointIndex = this.findFreeJointIndex();
+    if (freeJointIndex < 0) {
+      return;
+    }
+    const qposAdr = mjModel.jnt_qposadr[freeJointIndex];
+    const qpos = new Float64Array(7 + this.datasetQposAdr.length);
+    for (let i = 0; i < 7; i++) {
+      qpos[i] = mjData.qpos[qposAdr + i];
+    }
+    for (let i = 0; i < this.datasetQposAdr.length; i++) {
+      qpos[7 + i] = mjData.qpos[this.datasetQposAdr[i]];
+    }
+    this.liveSource?.reportContext(qpos, this.refIdx, this.refRootQuat[this.refIdx] ?? undefined);
+  }
+
+  /**
+   * Derive the root arrays for frames that arrived since the last call.
+   *
+   * The body arrays are shared with the source and need nothing done to them; root position and
+   * orientation are slices out of each body frame, so they are built here -- incrementally, since
+   * rebuilding the whole clip every time a block lands is quadratic in a session's length.
+   */
+  private syncLiveFrames(): void {
+    const source = this.liveSource;
+    if (!source) {
+      return;
+    }
+    // Re-point at the stream's arrays every time, so nothing that rebuilt them can leave the
+    // tracker reading a stale copy.
+    this.refJointPos = source.frames.jointPos;
+    this.refJointVel = source.frames.jointVel;
+    this.refBodyPosW = source.frames.bodyPosW;
+    this.refBodyQuatW = source.frames.bodyQuatW;
+    this.refBodyLinVelW = source.frames.bodyLinVelW;
+    this.refBodyAngVelW = source.frames.bodyAngVelW;
+    for (let i = this.liveMirrored; i < source.length; i++) {
+      const bodyPos = source.frames.bodyPosW[i];
+      const bodyQuat = source.frames.bodyQuatW[i];
+      if (!bodyPos || !bodyQuat) {
+        break;
+      }
+      const root = this.selectedRootBodyIndex;
+      this.refRootPos.push(bodyPos.slice(root * 3, root * 3 + 3));
+      this.refRootQuat.push(normalizeQuat(bodyQuat.slice(root * 4, root * 4 + 4)));
+      this.liveMirrored = i + 1;
+    }
+    this.refLen = this.liveMirrored;
+  }
+
   private updateReferenceState(): void {
+    // A live clip owns its arrays: they are the stream's own, and they grow as frames arrive.
+    // Rebuilding them here as copies -- which an episode reset would otherwise do, including the
+    // reset that hands over to the stream -- freezes them at whatever had arrived by then, while
+    // `refLen` keeps climbing. Every windowed read then indexes past the end and the policy is fed
+    // an all-zero reference: it walks on proprioception alone, never turning or backing up, while
+    // the root arrays (pushed to directly) still look perfectly correct from outside.
+    if (this.liveAdopted) {
+      this.syncLiveFrames();
+      return;
+    }
     const motion = this.selectedMotion;
     if (!motion || motion.frameCount === 0 || motion.clip_format === 'qpos') {
       this.refRootPos = [];
