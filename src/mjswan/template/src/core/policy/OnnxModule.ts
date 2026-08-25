@@ -78,6 +78,24 @@ export class OnnxModule {
       onnxInput[name] = input[key];
     }
 
+    // Debug hook, off unless asked for: the last feed, for comparing a browser run against a
+    // reference implementation. It publishes on `window` rather than the console because production
+    // builds strip `console.*` -- which is what made an all-zero reference invisible from outside,
+    // while everything the page could be asked about looked correct.
+    //
+    //     window.__mjswanDebugFeed = true;   // then read window.__policyFeed
+    if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__mjswanDebugFeed) {
+      const snapshot: Record<string, number[]> = {};
+      for (const [name, tensor] of Object.entries(onnxInput)) {
+        const data = tensor.data as unknown as ArrayLike<number>;
+        const take = Math.min(data.length, 12);
+        const head: number[] = [];
+        for (let j = 0; j < take; j++) head.push(Number(data[j]));
+        snapshot[name] = head;
+      }
+      (window as unknown as Record<string, unknown>).__policyFeed = snapshot;
+    }
+
     const session = this.session;
     const onnxOutput = await queueOrtRun(() => session.run(onnxInput));
     const result: Record<string, ort.Tensor> = {};
