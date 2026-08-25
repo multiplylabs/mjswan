@@ -46,6 +46,8 @@ type Hello = {
   control_dt: number;
   n_dofs: number;
   body_names: string[];
+  /** Locomotion styles the generator offers, in selection order. */
+  styles?: string[];
 };
 
 // Buffer depth is not free: it is steering latency, and it is also dead time in the loop that
@@ -134,6 +136,9 @@ export class LiveMotionSource {
   private readonly pressed = new Set<string>();
   private resolveReady: (() => void) | null = null;
   private detachKeys: (() => void) | null = null;
+  private styles: string[] = [];
+  private styleIndex = 0;
+  private stylePanel: HTMLElement | null = null;
 
   constructor(private readonly config: LiveMotionStreamConfig) {
     this.lead = config.lead ?? DEFAULT_LEAD;
@@ -165,6 +170,8 @@ export class LiveMotionSource {
         const message = JSON.parse(event.data) as Hello;
         if (message.type === 'hello') {
           this.hello = message;
+          this.styles = message.styles ?? [];
+          this.renderStyles();
           this.resolveReady?.();
           this.resolveReady = null;
           // Nothing is buffered yet, so the first request has to be issued here rather than
@@ -256,6 +263,54 @@ export class LiveMotionSource {
     }
   }
 
+  /**
+   * Choose a locomotion style by its position in the list the generator announced.
+   *
+   * Number keys rather than letters: the letters a keyboard-driven robot can spare are already
+   * taken by the direction and turn keys, and the styles are a list whose contents come from the
+   * far end of the socket rather than a fixed set worth memorising.
+   */
+  selectStyle(index: number): void {
+    if (index < 0 || index >= this.styles.length || index === this.styleIndex) {
+      return;
+    }
+    this.styleIndex = index;
+    if (this.connected) {
+      this.socket?.send(JSON.stringify({ type: 'style', name: this.styles[index] }));
+    }
+    this.renderStyles();
+  }
+
+  /** A small panel listing the styles, so the number keys are discoverable. */
+  private renderStyles(): void {
+    if (typeof document === 'undefined' || this.styles.length === 0) {
+      return;
+    }
+    if (!this.stylePanel) {
+      const panel = document.createElement('div');
+      panel.style.cssText = [
+        'position:fixed', 'left:12px', 'bottom:12px', 'z-index:40',
+        'font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace',
+        'background:rgba(17,20,24,0.82)', 'color:#c8ced6',
+        'border:1px solid rgba(255,255,255,0.10)', 'border-radius:8px',
+        'padding:8px 10px', 'pointer-events:none', 'backdrop-filter:blur(6px)',
+      ].join(';');
+      document.body.appendChild(panel);
+      this.stylePanel = panel;
+    }
+    const rows = this.styles
+      .map((name, i) => {
+        const label = name.replace(/_/g, ' ');
+        const active = i === this.styleIndex;
+        const colour = active ? '#8fd694' : '#c8ced6';
+        const marker = active ? '&#9679;' : '&nbsp;';
+        return `<div style="color:${colour}">${marker} ${i + 1}&nbsp; ${label}</div>`;
+      })
+      .join('');
+    this.stylePanel.innerHTML =
+      `<div style="color:#8a93a0;margin-bottom:4px">style</div>${rows}`;
+  }
+
   setCommand(forward: number, lateral: number, turn: number): void {
     if (
       forward === this.command[0] &&
@@ -300,6 +355,10 @@ export class LiveMotionSource {
         this.recomputeCommand();
         return;
       }
+      if (key >= '1' && key <= '9') {
+        this.selectStyle(Number(key) - 1);
+        return;
+      }
       if (!(key in KEY_COMMANDS) || event.repeat) {
         return;
       }
@@ -328,6 +387,8 @@ export class LiveMotionSource {
   }
 
   dispose(): void {
+    this.stylePanel?.remove();
+    this.stylePanel = null;
     this.detachKeys?.();
     this.detachKeys = null;
     this.socket?.close();
