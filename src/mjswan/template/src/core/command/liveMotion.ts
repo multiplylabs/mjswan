@@ -74,6 +74,26 @@ const KEY_COMMANDS: Record<string, [number, number, number]> = {
   arrowright: [0.4, 0.0, -20.0],
 };
 
+/**
+ * The stream to use, from the build's declaration and the page's own URL.
+ *
+ * `?stream=wss://host:port` overrides, and enables a live clip even where the build declared none.
+ * That is what lets one published page be both things: a self-contained demo of a recorded clip for
+ * anyone who opens it, and a live one for anyone who has a generator to point it at -- including
+ * their own. Baking the URL in at build time makes the published page useless to everyone whose
+ * generator is somewhere else, which is everyone.
+ */
+export function resolveStreamConfig(
+  declared?: LiveMotionStreamConfig,
+): LiveMotionStreamConfig | null {
+  const search = typeof window === 'undefined' ? '' : window.location?.search ?? '';
+  const override = new URLSearchParams(search).get('stream');
+  if (override) {
+    return { ...(declared ?? {}), url: override };
+  }
+  return declared ?? null;
+}
+
 function emptyFrames(): LiveFrameArrays {
   return {
     jointPos: [],

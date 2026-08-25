@@ -5,7 +5,7 @@ import { getPosition, getQuaternion } from '../scene/scene';
 import { type NpzEntry, loadNpz } from '../scene/npz';
 import { type Bytes, resolveBytes } from '../utils/bytes';
 import { OnnxEvent, isOnnxEventConfig } from '../event/OnnxEvent';
-import { LiveMotionSource, type LiveMotionStreamConfig } from './liveMotion';
+import { LiveMotionSource, type LiveMotionStreamConfig, resolveStreamConfig } from './liveMotion';
 import type { CommandConfigEntry, CommandTerm, CommandTermContext, CommandUiConfig } from './types';
 
 export type TrackingMotionConfig = {
@@ -669,7 +669,7 @@ export class TrackingCommand implements CommandTerm {
 
   private async loadMotion(config: TrackingMotionConfig): Promise<LoadedTrackingMotion> {
     this.sampleHz = config.fps;
-    const stream = config.metadata?.stream;
+    const stream = resolveStreamConfig(config.metadata?.stream);
     if (stream) {
       // Connect now and keep playing the bundled clip meanwhile: the generator needs a moment to
       // produce its opening frames, and a clip that already tracks is a better thing to show than
