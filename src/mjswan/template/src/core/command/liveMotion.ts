@@ -29,6 +29,14 @@ export type LiveMotionStreamConfig = {
   block?: number;
   /** Attach WASD key handling to the window. */
   keys?: boolean;
+  /**
+   * Styles the operator may select, out of those the generator offers.
+   *
+   * The generator's style is one piece of shared state -- whoever set it last set it for whoever
+   * connects next -- so a scene that admits only one is not merely hiding the others: it asserts
+   * its own on connect, rather than inheriting whatever the previous session was left on.
+   */
+  styles?: string[];
 };
 
 /** The per-frame arrays a tracking clip is made of, in the engine's own layout. */
@@ -208,7 +216,13 @@ export class LiveMotionSource {
         const message = JSON.parse(event.data) as Hello;
         if (message.type === 'hello') {
           this.hello = message;
-          this.styles = message.styles ?? [];
+          const offered = message.styles ?? [];
+          const allowed = this.config.styles;
+          // The generator's order is kept: the allow-list says which, not in what order.
+          this.styles = allowed ? offered.filter((name) => allowed.includes(name)) : offered;
+          if (this.styles.length === 1) {
+            socket.send(JSON.stringify({ type: 'style', name: this.styles[0] }));
+          }
           this.renderStyles();
           this.resolveReady?.();
           this.resolveReady = null;
@@ -321,7 +335,8 @@ export class LiveMotionSource {
 
   /** A small panel listing the styles, so the number keys are discoverable. */
   private renderStyles(): void {
-    if (typeof document === 'undefined' || this.styles.length === 0) {
+    // Nothing to choose between is nothing to draw, and the number keys are inert anyway.
+    if (typeof document === 'undefined' || this.styles.length < 2) {
       return;
     }
     if (!this.stylePanel) {

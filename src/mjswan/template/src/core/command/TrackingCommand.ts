@@ -366,6 +366,11 @@ export class TrackingCommand implements CommandTerm {
       });
     }
     this.ghostData?.delete?.();
+    // The live source outlives the term otherwise: its socket stays connected and its style panel
+    // stays on screen, so switching policies leaves the previous scene's controls over the new
+    // one and two sources competing for a generator that serves one client.
+    this.liveSource?.dispose();
+    this.liveSource = null;
   }
 
   isReady(): boolean {
