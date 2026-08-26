@@ -21,7 +21,7 @@ export type TrackingMotionConfig = {
   clip_format?: 'body_world' | 'qpos';
   time_source?: 'wall' | 'sim';
   /** Free-form extras from the build; `stream` turns this motion into a live one. */
-  metadata?: { stream?: LiveMotionStreamConfig } & Record<string, unknown>;
+  metadata?: { stream?: Partial<LiveMotionStreamConfig> } & Record<string, unknown>;
 };
 
 type LoadedTrackingMotion = TrackingMotionConfig & {

@@ -96,7 +96,7 @@ const KEY_COMMANDS: Record<string, [number, number, number]> = {
  * far end will not always be up.
  */
 export async function resolveStreamConfig(
-  declared?: LiveMotionStreamConfig,
+  declared?: Partial<LiveMotionStreamConfig>,
 ): Promise<LiveMotionStreamConfig | null> {
   const search = typeof window === 'undefined' ? '' : window.location?.search ?? '';
   const override = new URLSearchParams(search).get('stream');
@@ -117,7 +117,11 @@ export async function resolveStreamConfig(
       // A missing or unreachable stream.json is the normal case for a clip-only deploy.
     }
   }
-  return declared ?? null;
+  // A declaration without a URL is a scene stating its terms for a generator it does not name --
+  // which styles it admits, how deep to buffer -- and is not itself a stream to connect to. That
+  // separation is what lets the published page carry its settings in the bundle while the address
+  // stays in a file beside it, rewritable without a rebuild.
+  return declared?.url ? (declared as LiveMotionStreamConfig) : null;
 }
 
 function emptyFrames(): LiveFrameArrays {
