@@ -9,6 +9,7 @@
  */
 
 import type { SeededRng } from '../rng';
+import { decodeNames } from '../utils/modelNames';
 
 type MjModel = import('mujoco').MjModel;
 type MjData = import('mujoco').MjData;
@@ -67,19 +68,6 @@ export function isModelFieldDrConfig(config: unknown): config is ModelFieldDrCon
     (config as { kind?: unknown }).kind === 'model_field' &&
     typeof (config as { field?: unknown }).field === 'string'
   );
-}
-
-function decodeNames(mjModel: MjModel, count: number, adr: ArrayLike<number>): string[] {
-  const bytes = new Uint8Array(mjModel.names);
-  const decoder = new TextDecoder();
-  const names: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const start = adr[i];
-    let end = start;
-    while (end < bytes.length && bytes[end] !== 0) end++;
-    names.push(decoder.decode(bytes.subarray(start, end)));
-  }
-  return names;
 }
 
 function nameTable(mjModel: MjModel, entityType: ModelFieldDrConfig['entity_type']): string[] {

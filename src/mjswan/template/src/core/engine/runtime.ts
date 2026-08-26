@@ -194,6 +194,8 @@ export class mjswanRuntime {
     tendons: ReturnType<typeof createTendonState>;
   };
   private dynamicBodyIds: Set<number> | null;
+  /** Jointless bodies that still move: the renderer caches static poses once, these excepted. */
+  private mocapBodyIds: Set<number> | null;
   private loopPromise: Promise<void> | null;
   private running: boolean;
   private timestep: number;
@@ -338,6 +340,7 @@ export class mjswanRuntime {
       tendons: createTendonState(),
     };
     this.dynamicBodyIds = null;
+    this.mocapBodyIds = null;
 
     this.mjModel = null;
     this.externalWrench = null;
@@ -424,6 +427,7 @@ export class mjswanRuntime {
     this.lights = [];
     this.mujocoRoot = null;
     this.dynamicBodyIds = null;
+    this.mocapBodyIds = null;
 
     await this.buildSceneFromMjz(scene.model);
 
@@ -541,6 +545,7 @@ export class mjswanRuntime {
       updateLightsFromData(this.mujoco, this.mjData, this.lights);
       updateHeadlightFromCamera(this.camera, this.lights);
       this.dynamicBodyIds = this.computeDynamicBodyIds(this.mjModel);
+      this.mocapBodyIds = this.computeMocapBodyIds(this.mjModel);
       this.syncStaticBodiesFromData();
 
       this.timestep = this.mjModel.opt.timestep || 0.001;
@@ -1486,8 +1491,9 @@ export class mjswanRuntime {
       return;
     }
     const dynamicBodyIds = this.dynamicBodyIds;
+    const mocapBodyIds = this.mocapBodyIds;
     for (let b = 0; b < this.mjModel.nbody; b++) {
-      if (dynamicBodyIds && !dynamicBodyIds.has(b)) {
+      if (dynamicBodyIds && !dynamicBodyIds.has(b) && !mocapBodyIds?.has(b)) {
         continue;
       }
       if (this.bodies[b]) {
@@ -1533,6 +1539,22 @@ export class mjswanRuntime {
       }
     }
     return dynamic;
+  }
+
+  /**
+   * Bodies driven by `mocap_pos`/`mocap_quat` rather than by joints.
+   *
+   * `computeDynamicBodyIds` asks whether a body or an ancestor has a joint, which is the right
+   * question for anything the solver integrates and the wrong one for these: a mocap body has no
+   * joints and never will, yet its pose is whatever was last written to it. Left out, it would be
+   * cached once at load and then sit where it started while the simulation moved it.
+   */
+  private computeMocapBodyIds(mjModel: MjModel): Set<number> {
+    const mocap = new Set<number>();
+    for (let bodyId = 1; bodyId < mjModel.nbody; bodyId++) {
+      if (mjModel.body_mocapid[bodyId] >= 0) mocap.add(bodyId);
+    }
+    return mocap;
   }
 
   private syncStaticBodiesFromData(): void {
@@ -1694,6 +1716,7 @@ export class mjswanRuntime {
     this.lights = [];
     this.mujocoRoot = null;
     this.dynamicBodyIds = null;
+    this.mocapBodyIds = null;
     this.lastSimState.bodies.clear();
     this.commandManager.dispose();
   }

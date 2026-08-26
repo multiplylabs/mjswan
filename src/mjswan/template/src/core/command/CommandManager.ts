@@ -1,4 +1,5 @@
 import { CustomCommands } from './custom_commands';
+import { SlopeTerrain } from './slopeTerrain';
 import { CommandDebugVisuals, type VizPrimitive } from './debugViz';
 import { TrackingCommand } from './TrackingCommand';
 import { OnnxCommand, type OnnxCommandConfig } from './OnnxCommand';
@@ -136,6 +137,7 @@ class UiCommand implements CommandTerm {
 const BuiltinCommandTerms: Record<string, CommandTermConstructor> = {
   UiCommand,
   TrackingCommand,
+  SlopeTerrain,
 };
 
 export class CommandManager {
