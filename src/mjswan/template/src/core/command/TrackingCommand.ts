@@ -7,6 +7,7 @@ import { type Bytes, resolveBytes } from '../utils/bytes';
 import { OnnxEvent, isOnnxEventConfig } from '../event/OnnxEvent';
 import { LiveMotionSource, type LiveMotionStreamConfig, resolveStreamConfig } from './liveMotion';
 import type { CommandConfigEntry, CommandTerm, CommandTermContext, CommandUiConfig } from './types';
+import { isDynamicBody } from '../utils/modelBodies';
 
 export type TrackingMotionConfig = {
   name: string;
@@ -657,19 +658,10 @@ export class TrackingCommand implements CommandTerm {
   }
 
   private isDynamicBody(bodyId: number): boolean {
+    // Shared with the brace ghost: two ghosts of one model that disagreed on which bodies they
+    // cover would each draw a different subset of it.
     const mjModel = this.context.mjModel;
-    if (!mjModel || bodyId <= 0 || bodyId >= mjModel.nbody) {
-      return false;
-    }
-
-    let current = bodyId;
-    while (current > 0) {
-      if (mjModel.body_jntnum[current] > 0) {
-        return true;
-      }
-      current = mjModel.body_parentid[current];
-    }
-    return false;
+    return mjModel ? isDynamicBody(mjModel, bodyId) : false;
   }
 
   private async loadMotion(config: TrackingMotionConfig): Promise<LoadedTrackingMotion> {

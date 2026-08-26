@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 
 import { getPosition, getQuaternion } from './scene';
+import { isDynamicBody } from '../utils/modelBodies';
 
 type MjModel = import('mujoco').MjModel;
 
@@ -64,7 +65,11 @@ export class PoseGhost {
     this.root.visible = false;
     for (const [key, body] of Object.entries(sourceBodies)) {
       const bodyId = Number(key);
-      if (bodyId <= 0 || bodyId >= mjModel.nbody) continue;
+      // Only bodies this ghost can actually place. `update` indexes a policy's body list, which is
+      // the robot's own chain -- clone anything else, a scene prop say, and it is never posed but
+      // is still shown: a tinted, translucent copy of the scenery frozen wherever it stood when
+      // the ghost was built.
+      if (!isDynamicBody(mjModel, bodyId)) continue;
       const clone = body.clone(true);
       clone.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
