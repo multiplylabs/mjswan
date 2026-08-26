@@ -82,6 +82,14 @@ const KEY_COMMANDS: Record<string, [number, number, number]> = {
   arrowright: [0.4, 0.0, -20.0],
 };
 
+/** Which cap an arrow key lights: they issue the same commands the letters do. */
+const ARROW_ALIASES: Record<string, string> = {
+  arrowup: 'w',
+  arrowdown: 's',
+  arrowleft: 'q',
+  arrowright: 'e',
+};
+
 /**
  * Where the generator is, in order of preference: the page's own URL, then a `stream.json` beside
  * the page, then whatever the build declared.
@@ -189,6 +197,11 @@ export class LiveMotionSource {
   private styles: string[] = [];
   private styleIndex = 0;
   private stylePanel: HTMLElement | null = null;
+  /** Bottom-left stack both panels live in, so neither has to know the other's height. */
+  private hud: HTMLElement | null = null;
+  private keyPanel: HTMLElement | null = null;
+  private readonly keyPills = new Map<string, HTMLElement>();
+  private focusNote: HTMLElement | null = null;
 
   constructor(private readonly config: LiveMotionStreamConfig) {
     this.lead = config.lead ?? DEFAULT_LEAD;
@@ -337,6 +350,151 @@ export class LiveMotionSource {
     this.renderStyles();
   }
 
+  /** The stack both panels sit in, bottom-left, out of the way of the robot. */
+  private hudRoot(): HTMLElement {
+    if (!this.hud) {
+      const hud = document.createElement('div');
+      hud.style.cssText = [
+        'position:fixed', 'left:12px', 'bottom:12px', 'z-index:40',
+        'display:flex', 'flex-direction:column', 'gap:8px', 'align-items:flex-start',
+        // Never in the way of a drag on the canvas behind it.
+        'pointer-events:none',
+        'font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace',
+      ].join(';');
+      document.body.appendChild(hud);
+      this.hud = hud;
+    }
+    return this.hud;
+  }
+
+  private static panelStyle(): string {
+    return [
+      'background:rgba(17,20,24,0.82)', 'color:#c8ced6',
+      'border:1px solid rgba(255,255,255,0.10)', 'border-radius:8px',
+      'padding:8px 10px', 'backdrop-filter:blur(6px)',
+    ].join(';');
+  }
+
+  /** One key cap. Lit ones fill; the rest read as available but idle. */
+  private static pill(label: string): HTMLElement {
+    const pill = document.createElement('span');
+    pill.textContent = label;
+    pill.style.cssText = [
+      'display:inline-flex', 'align-items:center', 'justify-content:center',
+      'height:22px', 'min-width:22px', 'padding:0 5px',
+      'background:rgba(255,255,255,0.06)', 'border:1px solid rgba(255,255,255,0.16)',
+      'border-radius:3px', 'font-size:11px', 'color:#c8ced6',
+      'transition:background .08s,border-color .08s,color .08s,box-shadow .08s',
+    ].join(';');
+    return pill;
+  }
+
+  /**
+   * The WASD cluster, lit as keys go down.
+   *
+   * Drawn in the shape of the keys themselves rather than listed as text: the point is to be
+   * readable at a glance while steering, and to make it obvious the page is listening at all.
+   */
+  private renderKeys(): void {
+    if (typeof document === 'undefined' || this.keyPanel) {
+      return;
+    }
+    const panel = document.createElement('div');
+    panel.style.cssText = `${LiveMotionSource.panelStyle()};transition:opacity .15s`;
+
+    const rows: [string, string[]][] = [
+      ['', ['', 'w', '']],
+      ['', ['a', 's', 'd']],
+      ['', ['q', '', 'e']],
+    ];
+    const header = document.createElement('div');
+    header.style.cssText = 'color:#8a93a0;margin-bottom:6px;letter-spacing:0.08em';
+    header.textContent = 'steer';
+
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:center';
+    for (const [, keys] of rows) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:4px';
+      for (const key of keys) {
+        if (!key) {
+          const gap = document.createElement('span');
+          gap.style.cssText = 'display:inline-block;width:22px';
+          row.appendChild(gap);
+          continue;
+        }
+        const pill = LiveMotionSource.pill(key.toUpperCase());
+        this.keyPills.set(key, pill);
+        row.appendChild(pill);
+      }
+      grid.appendChild(row);
+    }
+
+    const legend = document.createElement('div');
+    legend.style.cssText = 'margin-top:8px;font-size:11px;color:#8a93a0;display:flex;flex-direction:column;gap:2px';
+    for (const [keys, what] of [
+      ['W/S', 'walk'],
+      ['A/D', 'step'],
+      ['Q/E', 'turn'],
+    ]) {
+      const line = document.createElement('div');
+      // Fixed first column, so the three descriptions start on one edge.
+      line.innerHTML =
+        `<span style="display:inline-block;width:30px;color:#c8ced6">${keys}</span>${what}`;
+      legend.appendChild(line);
+    }
+
+    const note = document.createElement('div');
+    note.style.cssText = [
+      'margin-top:6px', 'font-size:11px', 'text-align:center',
+      'color:#e0b341', 'display:none',
+    ].join(';');
+    note.textContent = 'click page to steer';
+    this.focusNote = note;
+
+    panel.appendChild(header);
+    panel.appendChild(grid);
+    panel.appendChild(legend);
+    panel.appendChild(note);
+    this.hudRoot().appendChild(panel);
+    this.keyPanel = panel;
+    this.paintKeys();
+  }
+
+  /** Repaint every cap from `pressed`; an arrow lights the letter it stands in for. */
+  private paintKeys(): void {
+    if (!this.keyPanel) {
+      return;
+    }
+    const lit = new Set<string>();
+    for (const key of this.pressed) {
+      lit.add(ARROW_ALIASES[key] ?? key);
+    }
+    for (const [key, pill] of this.keyPills) {
+      const on = lit.has(key);
+      pill.style.background = on ? '#76b900' : 'rgba(255,255,255,0.06)';
+      pill.style.borderColor = on ? '#76b900' : 'rgba(255,255,255,0.16)';
+      pill.style.color = on ? '#0a0a0a' : '#c8ced6';
+      pill.style.boxShadow = on ? '0 0 6px rgba(118,185,0,0.45)' : 'none';
+    }
+  }
+
+  /**
+   * Dim the cluster when the page is not listening.
+   *
+   * Keys are bound to the window, so once focus moves elsewhere -- another app, another tab --
+   * nothing arrives and the robot simply stops responding. Without this the page looks broken
+   * rather than inattentive, and there is no hint that a click anywhere restores it.
+   */
+  private setFocused(focused: boolean): void {
+    if (this.keyPanel) {
+      this.keyPanel.style.opacity = focused ? '1' : '0.55';
+    }
+    if (this.focusNote) {
+      this.focusNote.style.display = focused ? 'none' : 'block';
+    }
+  }
+
   /** A small panel listing the styles, so the number keys are discoverable. */
   private renderStyles(): void {
     // Nothing to choose between is nothing to draw, and the number keys are inert anyway.
@@ -345,14 +503,8 @@ export class LiveMotionSource {
     }
     if (!this.stylePanel) {
       const panel = document.createElement('div');
-      panel.style.cssText = [
-        'position:fixed', 'left:12px', 'bottom:12px', 'z-index:40',
-        'font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace',
-        'background:rgba(17,20,24,0.82)', 'color:#c8ced6',
-        'border:1px solid rgba(255,255,255,0.10)', 'border-radius:8px',
-        'padding:8px 10px', 'pointer-events:none', 'backdrop-filter:blur(6px)',
-      ].join(';');
-      document.body.appendChild(panel);
+      panel.style.cssText = LiveMotionSource.panelStyle();
+      this.hudRoot().appendChild(panel);
       this.stylePanel = panel;
     }
     const rows = this.styles
@@ -410,6 +562,7 @@ export class LiveMotionSource {
       if (key === ' ') {
         this.pressed.clear();
         this.recomputeCommand();
+        this.paintKeys();
         return;
       }
       if (key >= '1' && key <= '9') {
@@ -421,31 +574,46 @@ export class LiveMotionSource {
       }
       this.pressed.add(key);
       this.recomputeCommand();
+      this.paintKeys();
     };
     const up = (event: KeyboardEvent): void => {
       const key = event.key.toLowerCase();
       if (this.pressed.delete(key)) {
         this.recomputeCommand();
+        this.paintKeys();
       }
     };
     // Releasing outside the page would otherwise leave the robot walking with no key held.
     const blur = (): void => {
       this.pressed.clear();
       this.recomputeCommand();
+      this.paintKeys();
+      this.setFocused(false);
     };
+    const focus = (): void => this.setFocused(true);
     target.addEventListener('keydown', down);
     target.addEventListener('keyup', up);
     target.addEventListener('blur', blur);
+    target.addEventListener('focus', focus);
+    this.renderKeys();
+    this.setFocused(typeof document === 'undefined' || document.hasFocus());
     this.detachKeys = (): void => {
       target.removeEventListener('keydown', down);
       target.removeEventListener('keyup', up);
       target.removeEventListener('blur', blur);
+      target.removeEventListener('focus', focus);
     };
   }
 
   dispose(): void {
     this.stylePanel?.remove();
     this.stylePanel = null;
+    this.keyPanel?.remove();
+    this.keyPanel = null;
+    this.keyPills.clear();
+    this.focusNote = null;
+    this.hud?.remove();
+    this.hud = null;
     this.detachKeys?.();
     this.detachKeys = null;
     this.socket?.close();
