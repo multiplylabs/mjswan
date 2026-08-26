@@ -76,18 +76,6 @@ const KEY_COMMANDS: Record<string, [number, number, number]> = {
   d: [0.0, -0.45, 0.0],
   q: [0.4, 0.0, 20.0],
   e: [0.4, 0.0, -20.0],
-  arrowup: [0.8, 0.0, 0.0],
-  arrowdown: [-0.5, 0.0, 0.0],
-  arrowleft: [0.4, 0.0, 20.0],
-  arrowright: [0.4, 0.0, -20.0],
-};
-
-/** Which cap an arrow key lights: they issue the same commands the letters do. */
-const ARROW_ALIASES: Record<string, string> = {
-  arrowup: 'w',
-  arrowdown: 's',
-  arrowleft: 'q',
-  arrowright: 'e',
 };
 
 /**
@@ -335,9 +323,10 @@ export class LiveMotionSource {
   /**
    * Choose a locomotion style by its position in the list the generator announced.
    *
-   * Number keys rather than letters: the letters a keyboard-driven robot can spare are already
-   * taken by the direction and turn keys, and the styles are a list whose contents come from the
-   * far end of the socket rather than a fixed set worth memorising.
+   * Reached by the arrow keys or by clicking the list, not by number keys: the list is as long as
+   * the generator says it is -- twelve, here -- and a keyboard has nine digits, so numbering made
+   * the last few unreachable and the numbers themselves a lie about what could be pressed. The
+   * arrows are free because the letters do the steering.
    */
   selectStyle(index: number): void {
     if (index < 0 || index >= this.styles.length || index === this.styleIndex) {
@@ -461,15 +450,12 @@ export class LiveMotionSource {
     this.paintKeys();
   }
 
-  /** Repaint every cap from `pressed`; an arrow lights the letter it stands in for. */
+  /** Repaint every cap from `pressed`. */
   private paintKeys(): void {
     if (!this.keyPanel) {
       return;
     }
-    const lit = new Set<string>();
-    for (const key of this.pressed) {
-      lit.add(ARROW_ALIASES[key] ?? key);
-    }
+    const lit = new Set(this.pressed);
     for (const [key, pill] of this.keyPills) {
       const on = lit.has(key);
       pill.style.background = on ? '#76b900' : 'rgba(255,255,255,0.06)';
@@ -495,29 +481,61 @@ export class LiveMotionSource {
     }
   }
 
-  /** A small panel listing the styles, so the number keys are discoverable. */
+  /** The style list: pick with the arrow keys, or click a line. */
   private renderStyles(): void {
-    // Nothing to choose between is nothing to draw, and the number keys are inert anyway.
+    // Nothing to choose between is nothing to draw, and the arrows are inert anyway.
     if (typeof document === 'undefined' || this.styles.length < 2) {
       return;
     }
     if (!this.stylePanel) {
       const panel = document.createElement('div');
-      panel.style.cssText = LiveMotionSource.panelStyle();
+      // The one panel that takes the mouse; the rest of the stack stays out of the way of a drag
+      // on the canvas behind it.
+      panel.style.cssText = `${LiveMotionSource.panelStyle()};pointer-events:auto`;
       this.hudRoot().appendChild(panel);
       this.stylePanel = panel;
     }
-    const rows = this.styles
-      .map((name, i) => {
-        const label = name.replace(/_/g, ' ');
-        const active = i === this.styleIndex;
-        const colour = active ? '#8fd694' : '#c8ced6';
-        const marker = active ? '&#9679;' : '&nbsp;';
-        return `<div style="color:${colour}">${marker} ${i + 1}&nbsp; ${label}</div>`;
-      })
-      .join('');
-    this.stylePanel.innerHTML =
-      `<div style="color:#8a93a0;margin-bottom:4px">style</div>${rows}`;
+    this.stylePanel.textContent = '';
+
+    const header = document.createElement('div');
+    header.style.cssText =
+      'color:#8a93a0;margin-bottom:6px;letter-spacing:0.08em;display:flex;align-items:center;gap:5px';
+    header.appendChild(document.createTextNode('style'));
+    const up = LiveMotionSource.pill('\u2191');
+    const down = LiveMotionSource.pill('\u2193');
+    for (const pill of [up, down]) {
+      pill.style.height = '16px';
+      pill.style.minWidth = '16px';
+      pill.style.fontSize = '10px';
+      header.appendChild(pill);
+    }
+    this.stylePanel.appendChild(header);
+
+    this.styles.forEach((name, i) => {
+      const active = i === this.styleIndex;
+      const row = document.createElement('div');
+      row.style.cssText = [
+        'display:flex', 'align-items:center', 'gap:6px', 'cursor:pointer',
+        'padding:1px 4px', 'margin:0 -4px', 'border-radius:3px',
+        `color:${active ? '#8fd694' : '#c8ced6'}`,
+        `background:${active ? 'rgba(143,214,148,0.10)' : 'transparent'}`,
+        'transition:background .08s,color .08s',
+      ].join(';');
+      const marker = document.createElement('span');
+      marker.style.cssText = 'width:6px;text-align:center;color:#8fd694';
+      marker.textContent = active ? '\u25cf' : '';
+      row.appendChild(marker);
+      row.appendChild(document.createTextNode(name.replace(/_/g, ' ')));
+      // Hover has to be scripted: these are inline styles, with no stylesheet to carry `:hover`.
+      row.addEventListener('mouseenter', () => {
+        if (i !== this.styleIndex) row.style.background = 'rgba(255,255,255,0.07)';
+      });
+      row.addEventListener('mouseleave', () => {
+        if (i !== this.styleIndex) row.style.background = 'transparent';
+      });
+      row.addEventListener('click', () => this.selectStyle(i));
+      this.stylePanel?.appendChild(row);
+    });
   }
 
   setCommand(forward: number, lateral: number, turn: number): void {
@@ -565,8 +583,10 @@ export class LiveMotionSource {
         this.paintKeys();
         return;
       }
-      if (key >= '1' && key <= '9') {
-        this.selectStyle(Number(key) - 1);
+      if (key === 'arrowup' || key === 'arrowdown') {
+        // Otherwise the page scrolls under the viewer while the operator is choosing a gait.
+        event.preventDefault();
+        this.selectStyle(this.styleIndex + (key === 'arrowup' ? -1 : 1));
         return;
       }
       if (!(key in KEY_COMMANDS) || event.repeat) {
